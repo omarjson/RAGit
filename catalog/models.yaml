@@ -1,0 +1,112 @@
+# RAGit curated model catalog
+# fitness is computed at runtime against detected hardware.
+# modalities: text | vision | audio
+# quants: map of quant name -> approx size in GB (used for RAM/VRAM estimate)
+
+models:
+  - id: qwen2.5-0.5b
+    name: Qwen2.5-0.5B-Instruct
+    repo: Qwen/Qwen2.5-0.5B-Instruct-GGUF
+    default_file: Qwen2.5-0.5B-Instruct-Q4_K_M.gguf
+    modalities: [text]
+    context: 32768
+    quants:
+      Q2_K: 0.3
+      Q4_K_M: 0.5
+      Q6_K: 0.7
+      Q8_0: 0.9
+
+  - id: qwen2.5-3b
+    name: Qwen2.5-3B-Instruct
+    repo: Qwen/Qwen2.5-3B-Instruct-GGUF
+    default_file: Qwen2.5-3B-Instruct-Q4_K_M.gguf
+    modalities: [text]
+    context: 32768
+    quants:
+      Q2_K: 1.3
+      Q4_K_M: 2.0
+      Q6_K: 2.6
+      Q8_0: 3.4
+
+  - id: qwen2.5-7b
+    name: Qwen2.5-7B-Instruct
+    repo: Qwen/Qwen2.5-7B-Instruct-GGUF
+    default_file: Qwen2.5-7B-Instruct-Q4_K_M.gguf
+    modalities: [text]
+    context: 32768
+    quants:
+      Q2_K: 2.9
+      Q4_K_M: 4.7
+      Q6_K: 6.0
+      Q8_0: 7.9
+
+  - id: llama-3.2-3b
+    name: Llama-3.2-3B-Instruct
+    repo: bartowski/Llama-3.2-3B-Instruct-GGUF
+    default_file: Llama-3.2-3B-Instruct-Q4_K_M.gguf
+    modalities: [text]
+    context: 131072
+    quants:
+      Q2_K: 1.3
+      Q4_K_M: 2.0
+      Q6_K: 2.6
+      Q8_0: 3.4
+
+  - id: qwen2.5-14b
+    name: Qwen2.5-14B-Instruct
+    repo: Qwen/Qwen2.5-14B-Instruct-GGUF
+    default_file: Qwen2.5-14B-Instruct-Q4_K_M.gguf
+    modalities: [text]
+    context: 32768
+    quants:
+      Q2_K: 5.7
+      Q4_K_M: 9.0
+      Q6_K: 11.6
+      Q8_0: 15.2
+
+  - id: qwen2.5-32b
+    name: Qwen2.5-32B-Instruct
+    repo: Qwen/Qwen2.5-32B-Instruct-GGUF
+    default_file: Qwen2.5-32B-Instruct-Q4_K_M.gguf
+    modalities: [text]
+    context: 32768
+    quants:
+      Q2_K: 13.0
+      Q4_K_M: 20.0
+      Q6_K: 25.7
+      Q8_0: 33.8
+
+  - id: qwen2.5-vl-7b
+    name: Qwen2.5-VL-7B-Instruct
+    repo: Qwen/Qwen2.5-VL-7B-Instruct-GGUF
+    default_file: Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf
+    modalities: [text, vision]
+    context: 32768
+    quants:
+      Q4_K_M: 5.0
+      Q6_K: 6.4
+      Q8_0: 8.4
+
+  - id: gemma-3-4b
+    name: Gemma-3-4B-IT
+    repo: ggml-org/gemma-3-4b-it-GGUF
+    default_file: gemma-3-4b-it-Q4_K_M.gguf
+    modalities: [text, vision]
+    context: 131072
+    quants:
+      Q4_K_M: 3.0
+      Q6_K: 3.9
+      Q8_0: 5.1
+
+  # Recommended small embedding model
+  - id: nomic-embed-text
+    name: Nomic Embed Text (v1.5)
+    repo: nomic-ai/nomic-embed-text-v1.5-GGUF
+    default_file: nomic-embed-text-v1.5-Q4_K_M.gguf
+    modalities: [text]
+    context: 8192
+    embed: true
+    quants:
+      Q4_K_M: 0.4
+      Q5_K_M: 0.5
+      Q8_0: 0.7
