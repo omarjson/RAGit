@@ -1,4 +1,12 @@
-import { invoke, Channel } from "@tauri-apps/api/core";
+import { invoke, Channel, isTauri } from "@tauri-apps/api/core";
+
+export function runningInTauri(): boolean {
+  try {
+    return isTauri();
+  } catch {
+    return false;
+  }
+}
 
 export interface HardwareInfo {
   os: string;
