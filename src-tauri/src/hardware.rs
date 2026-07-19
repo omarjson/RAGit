@@ -1,8 +1,10 @@
 ﻿use serde::Serialize;
 use std::process::Command;
+use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
 
 /// Cross-platform hardware probe used to decide whether a model fits on this machine.
 #[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct HardwareInfo {
     pub os: String,
     pub arch: String,
@@ -14,89 +16,109 @@ pub struct HardwareInfo {
     pub vram_bytes: Option<u64>,
 }
 
-fn detect_os() -> String {
-    std::env::consts::OS.to_string()
-}
-
-fn detect_arch() -> String {
-    std::env::consts::ARCH.to_string()
-}
-
-fn detect_cpu() -> (usize, String) {
-    let cores = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1);
-    let brand = if let Ok(out) = Command::new("wmic")
-        .args(["cpu", "get", "name"])
-        .output()
-    {
-        let s = String::from_utf8_lossy(&out.stdout);
-        s.lines()
-            .filter(|l| !l.trim().is_empty() && !l.contains("Name"))
-            .next()
-            .unwrap_or("unknown")
-            .trim()
-            .to_string()
-    } else {
-        "unknown".to_string()
-    };
-    (cores, brand)
-}
-
-fn detect_ram() -> u64 {
-    if let Ok(out) = Command::new("wmic")
-        .args(["ComputerSystem", "get", "TotalPhysicalMemory"])
-        .output()
-    {
-        let s = String::from_utf8_lossy(&out.stdout);
-        if let Some(line) = s
-            .lines()
-            .filter(|l| !l.trim().is_empty() && !l.contains("Total"))
-            .next()
-        {
-            return line.trim().parse::<u64>().unwrap_or(0);
-        }
-    }
-    0
-}
-
 fn detect_gpu() -> (String, Option<String>, Option<u64>) {
-    // Best-effort: report the first discrete/integrated GPU we can find.
-    if let Ok(out) = Command::new("wmic")
-        .args(["path", "win32_VideoController", "get", "name,AdapterRAM"])
-        .output()
-    {
-        let s = String::from_utf8_lossy(&out.stdout);
-        for line in s.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.contains("name") || line.contains("AdapterRAM") {
-                continue;
-            }
-            let mut parts = line.split_whitespace();
-            let ram = parts.next_back().and_then(|v| v.parse::<u64>().ok());
-            let name = line
-                .trim_end_matches(|c: char| c.is_numeric() || c.is_whitespace())
+    // Real GPU detection via WMI/CIM (works on Windows 10/11).
+    let tmp = std::env::temp_dir().join("ragit_hw_probe.ps1");
+    let query = "(Get-CimInstance Win32_VideoController | Select-Object -First 1).Name";
+    if std::fs::write(&tmp, query).is_err() {
+        return ("unknown".to_string(), None, None);
+    }
+    let out = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            &tmp.to_string_lossy(),
+        ])
+        .output();
+    let _ = std::fs::remove_file(&tmp);
+
+    let name = match out {
+        Ok(o) if o.status.success() => {
+            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if s.is_empty() { None } else { Some(s) }
+        }
+        _ => None,
+    };
+
+    let (backend, name) = match name {
+        Some(n) => {
+            let b = if n.to_lowercase().contains("nvidia") {
+                "CUDA".to_string()
+            } else if n.to_lowercase().contains("amd") || n.to_lowercase().contains("radeon") {
+                "ROCm".to_string()
+            } else if n.to_lowercase().contains("intel") {
+                "Intel".to_string()
+            } else {
+                "unknown".to_string()
+            };
+            (b, Some(n))
+        }
+        None => ("unknown".to_string(), None),
+    };
+
+    (backend, name, None)
+}
+
+fn detect_vram() -> Option<u64> {
+    // sysinfo does not expose VRAM on Windows reliably, so best-effort via
+    // PowerShell / CIM. Returns None if it cannot be determined.
+    let tmp = std::env::temp_dir().join("ragit_hw_probe.ps1");
+    let query = "Get-CimInstance Win32_VideoController | Where-Object { $_.AdapterRAM } | Select-Object -First 1 | ForEach-Object { $_.AdapterRAM }";
+    if std::fs::write(&tmp, query).is_err() {
+        return None;
+    }
+    let out = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            &tmp.to_string_lossy(),
+        ])
+        .output();
+    let _ = std::fs::remove_file(&tmp);
+    if let Ok(out) = out {
+        if out.status.success() {
+            let s = String::from_utf8_lossy(&out.stdout);
+            return s
                 .trim()
-                .to_string();
-            if !name.is_empty() {
-                return ("unknown".to_string(), Some(name), ram);
-            }
+                .replace(',', "")
+                .parse::<u64>()
+                .ok();
         }
     }
-    ("unknown".to_string(), None, None)
+    None
 }
 
 pub fn probe() -> HardwareInfo {
-    let (cores, cpu_brand) = detect_cpu();
-    let (gpu_backend, gpu_name, vram) = detect_gpu();
+    let mut sys = System::new_all();
+    sys.refresh_all();
+
+    let cores = sys.cpus().len().max(1);
+    let cpu_brand = sys
+        .cpus()
+        .first()
+        .map(|c| c.brand().to_string())
+        .filter(|b| !b.is_empty())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let total_ram_bytes = sys.total_memory(); // sysinfo 0.33 reports bytes
+
+    let (gpu_backend, gpu_name, _) = detect_gpu();
+    let vram_bytes = detect_vram();
+
     HardwareInfo {
-        os: detect_os(),
-        arch: detect_arch(),
+        os: std::env::consts::OS.to_string(),
+        arch: std::env::consts::ARCH.to_string(),
         cpu_cores: cores,
         cpu_brand,
-        total_ram_bytes: detect_ram(),
+        total_ram_bytes,
         gpu_backend,
         gpu_name,
-        vram_bytes: vram,
+        vram_bytes,
     }
 }

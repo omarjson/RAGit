@@ -1,7 +1,10 @@
+use std::sync::Arc;
+use std::time::Duration;
+
 use serde::Serialize;
 use tauri::{ipc::Channel, AppHandle, Manager};
 
-use crate::engine::EngineState;
+use crate::AppState;
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -12,7 +15,7 @@ pub enum ChatEvent {
     Error { message: String },
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, Clone)]
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
@@ -24,9 +27,9 @@ pub fn chat_stream(
     messages: Vec<ChatMessage>,
     on_event: Channel<ChatEvent>,
 ) -> Result<(), String> {
-    let state = app.state::<EngineState>();
+    let state = app.state::<Arc<AppState>>();
     let port = {
-        let st = state.status.lock().unwrap();
+        let st = state.engine.status.lock().map_err(|e| e.to_string())?;
         if !st.running {
             let _ = on_event.send(ChatEvent::Error {
                 message: "Engine not running".into(),
@@ -35,7 +38,6 @@ pub fn chat_stream(
         }
         st.port.unwrap_or(11435)
     };
-    let _ = &state;
 
     let url = format!("http://127.0.0.1:{port}/v1/chat/completions");
     let payload = serde_json::json!({
@@ -49,7 +51,10 @@ pub fn chat_stream(
         "max_tokens": 2048,
     });
 
-    let client = reqwest::blocking::Client::new();
+    let client = reqwest::blocking::ClientBuilder::new()
+        .timeout(Duration::from_secs(120))
+        .build()
+        .map_err(|e| e.to_string())?;
     let resp = match client.post(&url).json(&payload).send() {
         Ok(r) => r,
         Err(e) => {
@@ -61,7 +66,7 @@ pub fn chat_stream(
     };
 
     if !resp.status().is_success() {
-        let msg = format!("HTTP {}", resp.status());
+        let msg = format!("chat HTTP {}", resp.status());
         let _ = on_event.send(ChatEvent::Error { message: msg.clone() });
         return Err(msg);
     }
@@ -70,9 +75,14 @@ pub fn chat_stream(
         model: "ragit-model".into(),
     });
 
+    let body = resp.text().map_err(|e| {
+        let msg = format!("failed to read stream: {e}");
+        let _ = on_event.send(ChatEvent::Error { message: msg.clone() });
+        msg
+    })?;
+
     let mut tokens = 0usize;
-    // SSE stream: lines like `data: {...}` terminated by `data: [DONE]`.
-    for line in resp.text().unwrap_or_default().lines() {
+    for line in body.lines() {
         let line = line.trim();
         if !line.starts_with("data:") {
             continue;
@@ -113,20 +123,24 @@ pub fn complete_blocking(port: u16, messages: &[ChatMessage]) -> Result<String, 
         "temperature": 0.7,
         "max_tokens": 2048,
     });
-    let client = reqwest::blocking::Client::new();
+    let client = reqwest::blocking::ClientBuilder::new()
+        .timeout(Duration::from_secs(120))
+        .build()
+        .map_err(|e| e.to_string())?;
     let resp = client
         .post(&url)
         .json(&payload)
         .send()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("completion request failed: {e}"))?;
     if !resp.status().is_success() {
-        return Err(format!("HTTP {}", resp.status()));
+        let status = resp.status();
+        let text = resp.text().unwrap_or_default();
+        return Err(format!("completion HTTP {status}: {text}"));
     }
     let json: serde_json::Value = resp.json().map_err(|e| e.to_string())?;
-    let text = json
+    json
         .pointer("/choices/0/message/content")
         .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    Ok(text)
+        .map(|s| s.to_string())
+        .ok_or_else(|| "completion response missing content".to_string())
 }

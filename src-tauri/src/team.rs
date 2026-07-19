@@ -1,23 +1,23 @@
-use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::Mutex;
 
 use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
-use axum::extract::{Path as AxumPath, Query, State};
+use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
-use chrono::{Duration, Utc};
+use chrono::Utc;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::Sha256;
+use tokio::sync::Notify;
 
 use crate::rag::store::Store;
 
@@ -45,7 +45,6 @@ impl Role {
             Role::Viewer => "viewer",
         }
     }
-    /// Does this role permit an action requiring `required`?
     fn can(&self, required: &Role) -> bool {
         let rank = |r: &Role| match r {
             Role::Viewer => 1,
@@ -56,11 +55,31 @@ impl Role {
     }
 }
 
-// Server-side secret used to sign session tokens. Generated at startup.
 pub struct TeamState {
-    pub store: &'static Store,
+    pub store: Store,
     pub secret: String,
-    pub running: Mutex<bool>,
+    pub shutdown: Arc<Notify>,
+}
+
+fn secret_file() -> PathBuf {
+    let mut dir = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
+    dir.push("ragit");
+    std::fs::create_dir_all(&dir).ok();
+    dir.push("team_secret.txt");
+    dir
+}
+
+fn load_or_create_secret() -> String {
+    let path = secret_file();
+    if let Ok(s) = std::fs::read_to_string(&path) {
+        let s = s.trim().to_string();
+        if !s.is_empty() {
+            return s;
+        }
+    }
+    let secret = uuid::Uuid::new_v4().to_string();
+    let _ = std::fs::write(&path, &secret);
+    secret
 }
 
 fn hash_password(pw: &str) -> Result<String, String> {
@@ -77,7 +96,6 @@ fn verify_password(pw: &str, hash: &str) -> bool {
     Argon2::default().verify_password(pw.as_bytes(), &parsed).is_ok()
 }
 
-/// Build a signed session token: base64(payload).hmac
 fn sign_token(user_id: &str, secret: &str, expires_at: i64) -> String {
     let payload = format!("{user_id}.{expires_at}");
     let b = B64.encode(payload);
@@ -92,9 +110,7 @@ fn verify_token(token: &str, secret: &str) -> Option<String> {
     let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).ok()?;
     mac.update(b.as_bytes());
     let expected = hex::encode(mac.finalize().into_bytes());
-    if expected != sig {
-        return None;
-    }
+    if expected != sig { return None; }
     let payload = B64.decode(b).ok()?;
     let payload = String::from_utf8(payload).ok()?;
     let (user_id, _exp) = payload.split_once('.')?;
@@ -102,24 +118,13 @@ fn verify_token(token: &str, secret: &str) -> Option<String> {
 }
 
 #[derive(Deserialize)]
-struct RegisterReq {
-    username: String,
-    password: String,
-    role: Option<String>,
-}
+struct RegisterReq { username: String, password: String, role: Option<String> }
 
 #[derive(Deserialize)]
-struct LoginReq {
-    username: String,
-    password: String,
-}
+struct LoginReq { username: String, password: String }
 
 #[derive(Serialize)]
-struct UserOut {
-    id: String,
-    username: String,
-    role: String,
-}
+struct UserOut { id: String, username: String, role: String }
 
 fn auth_from_headers(headers: &HeaderMap, state: &TeamState) -> Option<(String, Role)> {
     let token = headers
@@ -127,7 +132,7 @@ fn auth_from_headers(headers: &HeaderMap, state: &TeamState) -> Option<(String, 
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))?;
     let _user_id = verify_token(token, &state.secret)?;
-    let (uid, role) = state.store.user_for_token(&token).ok().flatten()?;
+    let (uid, role) = state.store.user_for_token(token).ok().flatten()?;
     Some((uid, Role::from_str(&role)))
 }
 
@@ -140,7 +145,6 @@ async fn register(
     headers: HeaderMap,
     Json(req): Json<RegisterReq>,
 ) -> impl IntoResponse {
-    // First user becomes admin; subsequent require admin + admin token.
     let existing = state.store.list_users().map(|u| u.len()).unwrap_or(0);
     let role = if existing == 0 {
         Role::Admin
@@ -179,14 +183,10 @@ async fn login(
     if !verify_password(&req.password, &hash) {
         return (StatusCode::UNAUTHORIZED, Json(json!({"error": "invalid credentials"}))).into_response();
     }
-    let expires = Utc::now().timestamp() + 60 * 60 * 24 * 7; // 7 days
+    let expires = Utc::now().timestamp() + 60 * 60 * 24 * 7;
     let token = sign_token(&uid, &state.secret, expires);
     let _ = state.store.add_session(&token, &uid, expires);
-    (
-        StatusCode::OK,
-        Json(json!({"token": token, "role": role, "user_id": uid})),
-    )
-        .into_response()
+    (StatusCode::OK, Json(json!({"token": token, "role": role, "user_id": uid}))).into_response()
 }
 
 async fn logout(State(state): State<Arc<TeamState>>, headers: HeaderMap) -> impl IntoResponse {
@@ -216,8 +216,7 @@ async fn list_users(State(state): State<Arc<TeamState>>, headers: HeaderMap) -> 
     }
     match state.store.list_users() {
         Ok(users) => {
-            let out: Vec<UserOut> = users
-                .into_iter()
+            let out: Vec<UserOut> = users.into_iter()
                 .map(|(id, username, role)| UserOut { id, username, role })
                 .collect();
             (StatusCode::OK, Json(json!(out))).into_response()
@@ -227,10 +226,7 @@ async fn list_users(State(state): State<Arc<TeamState>>, headers: HeaderMap) -> 
 }
 
 #[derive(Deserialize)]
-struct SetRoleReq {
-    user_id: String,
-    role: String,
-}
+struct SetRoleReq { user_id: String, role: String }
 
 async fn set_role(
     State(state): State<Arc<TeamState>>,
@@ -250,11 +246,7 @@ async fn set_role(
 }
 
 #[derive(Deserialize)]
-struct ChatReq {
-    message: String,
-    library_id: Option<String>,
-    rerank: Option<bool>,
-}
+struct ChatReq { message: String, library_id: Option<String>, rerank: Option<bool> }
 
 async fn chat(
     State(state): State<Arc<TeamState>>,
@@ -265,22 +257,19 @@ async fn chat(
         return unauthorized();
     };
     let library_id = req.library_id.unwrap_or_else(|| "default".into());
-    // RBAC: editors/viewers must be members of the library (admins always allowed).
     if !role.can(&Role::Admin) {
         let lib_role = state.store.library_role(&library_id, &uid).ok().flatten();
         if lib_role.is_none() {
             return (StatusCode::FORBIDDEN, Json(json!({"error": "no access to library"}))).into_response();
         }
     }
-    // Delegate retrieval + completion to the engine via the existing RAG path.
-    let store = state.store;
+    let store = state.store.clone();
     let rerank = req.rerank.unwrap_or(false);
     let result = tokio::task::spawn_blocking({
         let library_id = library_id.clone();
         let message = req.message.clone();
-        move || crate::rag::indexer::team_rag_answer(store, &library_id, &message, rerank)
-    })
-    .await;
+        move || crate::rag::indexer::team_rag_answer(&store, &library_id, &message, rerank)
+    }).await;
     match result {
         Ok(Ok(answer)) => (StatusCode::OK, Json(json!({"answer": answer}))).into_response(),
         Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e}))).into_response(),
@@ -289,11 +278,7 @@ async fn chat(
 }
 
 #[derive(Deserialize)]
-struct GrantReq {
-    library_id: String,
-    user_id: String,
-    role: String,
-}
+struct GrantReq { library_id: String, user_id: String, role: String }
 
 async fn grant(
     State(state): State<Arc<TeamState>>,
@@ -323,7 +308,6 @@ async fn list_libraries(
         Ok(l) => l,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
     };
-    // Non-admins only see libraries they are members of.
     let filtered: Vec<String> = if role.can(&Role::Admin) {
         libs
     } else {
@@ -348,28 +332,32 @@ fn build_router(state: Arc<TeamState>) -> Router {
         .with_state(state)
 }
 
-/// Start the Team Mode HTTP server on 0.0.0.0:port.
 pub fn start_team_server(port: u16) -> Result<Arc<TeamState>, String> {
-    let state = unsafe { crate::APP_STATE.as_ref() }.ok_or("app not initialized")?;
-    let secret = uuid::Uuid::new_v4().to_string();
+    let state = crate::APP_STATE.get().ok_or("app not initialized")?;
+    let secret = load_or_create_secret();
+    let shutdown = Arc::new(Notify::new());
     let team_state = Arc::new(TeamState {
-        store: state.store,
+        store: state.store.clone(),
         secret,
-        running: Mutex::new(true),
+        shutdown: shutdown.clone(),
     });
     let app = build_router(team_state.clone());
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
         rt.block_on(async move {
-            let listener = tokio::net::TcpListener::bind(addr).await;
-            match listener {
-                Ok(l) => {
-                    if let Err(e) = axum::serve(l, app).await {
-                        eprintln!("team server error: {e}");
-                    }
+            let listener = match tokio::net::TcpListener::bind(addr).await {
+                Ok(l) => l,
+                Err(e) => {
+                    eprintln!("team server bind error: {e}");
+                    return;
                 }
-                Err(e) => eprintln!("team server bind error: {e}"),
+            };
+            if let Err(e) = axum::serve(listener, app)
+                .with_graceful_shutdown(async move { shutdown.notified().await })
+                .await
+            {
+                eprintln!("team server error: {e}");
             }
         });
     });
@@ -379,21 +367,21 @@ pub fn start_team_server(port: u16) -> Result<Arc<TeamState>, String> {
 #[tauri::command]
 pub fn start_team_server_cmd(port: Option<u16>) -> Result<String, String> {
     let port = port.unwrap_or(11436);
-    let g = unsafe { crate::APP_STATE.as_ref() }.ok_or("app not initialized")?;
-    if g.team.lock().unwrap().is_some() {
+    let state = crate::APP_STATE.get().ok_or("app not initialized")?;
+    if state.team.lock().map_err(|e| e.to_string())?.is_some() {
         return Ok(format!("Team server already running on port {port}"));
     }
     let team_state = start_team_server(port)?;
-    *g.team.lock().unwrap() = Some(team_state);
+    *state.team.lock().map_err(|e| e.to_string())? = Some(team_state);
     Ok(format!("Team server listening on http://0.0.0.0:{port}"))
 }
 
 #[tauri::command]
 pub fn stop_team_server_cmd() -> Result<String, String> {
-    let g = unsafe { crate::APP_STATE.as_ref() }.ok_or("app not initialized")?;
-    match g.team.lock().unwrap().take() {
+    let state = crate::APP_STATE.get().ok_or("app not initialized")?;
+    match state.team.lock().map_err(|e| e.to_string())?.take() {
         Some(s) => {
-            *s.running.lock().unwrap() = false;
+            s.shutdown.notify_one();
             Ok("Team server stopped".into())
         }
         None => Ok("Team server was not running".into()),
@@ -402,6 +390,6 @@ pub fn stop_team_server_cmd() -> Result<String, String> {
 
 #[tauri::command]
 pub fn team_status_cmd() -> Result<bool, String> {
-    let g = unsafe { crate::APP_STATE.as_ref() }.ok_or("app not initialized")?;
-    Ok(g.team.lock().unwrap().is_some())
+    let state = crate::APP_STATE.get().ok_or("app not initialized")?;
+    Ok(state.team.lock().map_err(|e| e.to_string())?.is_some())
 }

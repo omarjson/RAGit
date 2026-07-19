@@ -5,9 +5,12 @@ pub mod media;
 pub mod parse;
 pub mod vision;
 pub mod store;
+pub mod vector_db;
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+
+use zvec_rust::{Doc, Fts, MultiQuery, SearchQuery, SubQuery};
 
 use crate::engine;
 use store::Store;
@@ -79,52 +82,99 @@ pub fn retrieve_context_rerank(
 }
 
 fn retrieve_context_impl(
-    store: &Store,
+    _store: &Store,
     library_id: &str,
     query: &str,
     k: usize,
     rerank: bool,
 ) -> Result<String, String> {
     let emb = engine::with_port(|port| embed::embed(port, query))?;
-    let fetch = if rerank { (k * 4).max(12) } else { k };
-    let mut hits = store.search(library_id, &emb, fetch).map_err(|e| e.to_string())?;
+    let state = crate::APP_STATE.get().ok_or("app not initialized")?;
+    let coll = state.zvec.collection_for(library_id)?;
+
+    let hits = if rerank {
+        // Hybrid MultiQuery: dense vector + FTS + RRF rerank.
+        let mut sub_vec = SubQuery::new().map_err(|e| e.to_string())?;
+        sub_vec.set_field_name("embedding").map_err(|e| e.to_string())?;
+        sub_vec.set_query_vector(&emb).map_err(|e| e.to_string())?;
+        sub_vec.set_num_candidates((k * 4).max(50) as i32).map_err(|e| e.to_string())?;
+
+        let mut fts_inst = Fts::new().map_err(|e| e.to_string())?;
+        fts_inst.set_match_string(query).map_err(|e| e.to_string())?;
+        let mut sub_fts = SubQuery::new().map_err(|e| e.to_string())?;
+        sub_fts.set_field_name("content").map_err(|e| e.to_string())?;
+        sub_fts.set_fts(&fts_inst).map_err(|e| e.to_string())?;
+        sub_fts.set_num_candidates((k * 4).max(50) as i32).map_err(|e| e.to_string())?;
+
+        let mut mq = MultiQuery::new().map_err(|e| e.to_string())?;
+        mq.set_topk(k as i32).map_err(|e| e.to_string())?;
+        mq.set_rerank_rrf(60).map_err(|e| e.to_string())?;
+        mq.add_sub_query(&sub_vec).map_err(|e| e.to_string())?;
+        mq.add_sub_query(&sub_fts).map_err(|e| e.to_string())?;
+        coll.multi_query(&mq).map_err(|e| e.to_string())?
+    } else {
+        let sq = SearchQuery::builder()
+            .field_name("embedding")
+            .vector(&emb)
+            .topk(k as i32)
+            .filter(&format!("library_id = '{library_id}'"))
+            .build()
+            .map_err(|e| e.to_string())?;
+        coll.query(&sq).map_err(|e| e.to_string())?
+    };
+
     if hits.is_empty() {
         return Ok(String::new());
     }
-    if rerank {
-        let q_tokens: Vec<String> = tokenize(query);
-        for h in hits.iter_mut() {
-            let c_tokens = tokenize(&h.content);
-            let overlap = lexical_overlap(&q_tokens, &c_tokens);
-            h.score = 0.6 * h.score + 0.4 * overlap;
-        }
-        hits.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
-        hits.truncate(k);
-    }
+
     let mut ctx = String::from("=== RETRIEVED CONTEXT ===\n");
-    for (i, h) in hits.iter().enumerate() {
-        ctx.push_str(&format!(
-            "[{i}] ({}#{})\n{}\n\n",
-            h.file_name, h.chunk_index, h.content
-        ));
+    for (i, r) in hits.iter().enumerate() {
+        let fname = r.get_string("file_name")
+            .map_err(|e| e.to_string())?
+            .unwrap_or_else(|| "?".to_string());
+        let idx = r.get_i64("chunk_index")
+            .map_err(|e| e.to_string())?
+            .unwrap_or(0);
+        let content = r.get_string("content")
+            .map_err(|e| e.to_string())?
+            .unwrap_or_default();
+        ctx.push_str(&format!("[{i}] ({fname}#{idx})\n{content}\n\n"));
     }
     Ok(ctx)
 }
 
-fn tokenize(s: &str) -> Vec<String> {
-    s.split(|c: char| !c.is_alphanumeric())
-        .filter(|w| w.len() >= 3)
-        .map(|w| w.to_lowercase())
-        .collect()
-}
+/// Migrate chunks from the old SQLite chunks table into Zvec for a library.
+/// This allows existing indexed data to be used with the new Zvec-based retrieval.
+/// Returns the number of chunks migrated.
+#[tauri::command]
+pub fn migrate_library(library_id: Option<String>) -> Result<usize, String> {
+    let lib = library_id.as_deref().unwrap_or("default");
+    let state = crate::APP_STATE.get().ok_or("app not initialized")?;
 
-fn lexical_overlap(a: &[String], b: &[String]) -> f32 {
-    if a.is_empty() || b.is_empty() {
-        return 0.0;
+    let rows = state.store.get_chunks_with_embeddings(lib)?;
+    if rows.is_empty() {
+        return Ok(0);
     }
-    let set: std::collections::HashSet<&String> = b.iter().collect();
-    let matched = a.iter().filter(|t| set.contains(t)).count();
-    matched as f32 / a.len() as f32
+
+    let coll = state.zvec.collection_for(lib)?;
+    let mut docs = Vec::with_capacity(rows.len());
+    for (file_id, file_name, chunk_index, content, emb) in &rows {
+        let mut d = Doc::new().map_err(|e| e.to_string())?;
+        d.set_pk(&format!("{file_id}_{chunk_index}"));
+        d.add_string("library_id", lib).map_err(|e| e.to_string())?;
+        d.add_string("file_name", file_name).map_err(|e| e.to_string())?;
+        d.add_i64("chunk_index", *chunk_index).map_err(|e| e.to_string())?;
+        d.add_string("content", content).map_err(|e| e.to_string())?;
+        d.add_i32("level", 4).map_err(|e| e.to_string())?;
+        d.add_vector_f32("embedding", emb).map_err(|e| e.to_string())?;
+        docs.push(d);
+    }
+
+    let refs: Vec<&Doc> = docs.iter().collect();
+    coll.insert(&refs).map_err(|e| e.to_string())?;
+    coll.flush().map_err(|e| e.to_string())?;
+
+    Ok(rows.len())
 }
 
 #[tauri::command]
@@ -137,13 +187,13 @@ pub fn rag_chat(
 ) -> Result<String, String> {
     use crate::APP_STATE;
     use crate::chat;
-    let state = unsafe { APP_STATE.as_ref() }.ok_or("app not initialized")?;
+    let state = APP_STATE.get().ok_or("app not initialized")?;
     let lib = library_id.unwrap_or_else(|| "default".to_string());
 
     let context = if rerank.unwrap_or(false) {
-        retrieve_context_rerank(state.store, &lib, &message, 5)?
+        retrieve_context_rerank(&state.store, &lib, &message, 5)?
     } else {
-        retrieve_context(state.store, &lib, &message, 5)?
+        retrieve_context(&state.store, &lib, &message, 5)?
     };
     let mut messages = history.unwrap_or_default();
     if !context.is_empty() {
@@ -163,7 +213,7 @@ pub fn rag_chat(
     });
 
     let port = {
-        let st = state.engine.status.lock().unwrap();
+        let st = state.engine.status.lock().map_err(|e| e.to_string())?;
         st.port.ok_or("engine not running")?
     };
     chat::complete_blocking(port, &messages)

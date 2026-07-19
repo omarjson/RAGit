@@ -1,5 +1,6 @@
+use std::sync::Arc;
+
 use crate::catalog;
-use crate::download;
 use crate::hardware;
 use crate::AppState;
 use tauri::State;
@@ -15,8 +16,13 @@ pub fn list_models() -> Vec<catalog::CatalogModel> {
 }
 
 #[tauri::command]
-pub fn greet(name: String, state: State<AppState>) -> String {
-    let mut active = state.active_model.lock().unwrap();
+pub fn search_hf_models(query: String) -> Vec<catalog::SearchHit> {
+    catalog::search_hf(query)
+}
+
+#[tauri::command]
+pub fn greet(name: String, state: State<'_, Arc<AppState>>) -> Result<String, String> {
+    let mut active = state.active_model.lock().map_err(|e| e.to_string())?;
     *active = Some(name.clone());
-    format!("Hello, {name}! RAGit is running.")
+    Ok(format!("Hello, {name}! RAGit is running."))
 }

@@ -115,3 +115,114 @@ pub fn load_catalog() -> Vec<CatalogModel> {
         })
         .collect()
 }
+
+#[derive(Debug, Deserialize)]
+struct HfModel {
+    id: String,
+    #[serde(default)]
+    pipeline_tag: Option<String>,
+    #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default)]
+    downloads: Option<u64>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchHit {
+    pub id: String,
+    pub repo: String,
+    pub default_file: String,
+    pub modalities: Vec<String>,
+    pub context: usize,
+    pub embed: bool,
+    pub size_gb: f64,
+    pub fitness: Fitness,
+    pub downloads: u64,
+}
+
+/// Search HuggingFace for GGUF models by free-text query.
+/// Returns best-effort matches with the largest GGUF file as the default.
+pub fn search_hf(query: String) -> Vec<SearchHit> {
+    let url = format!(
+        "https://huggingface.co/api/models?search={}&filter=gguf&limit=25",
+        urlencode(&query)
+    );
+    let client = reqwest::blocking::Client::builder()
+        .build()
+        .unwrap_or_else(|_| reqwest::blocking::Client::new());
+    let resp = match client.get(&url).send() {
+        Ok(r) if r.status().is_success() => r,
+        _ => return vec![],
+    };
+    let models: Vec<HfModel> = match resp.json() {
+        Ok(m) => m,
+        Err(_) => return vec![],
+    };
+    let hw = crate::hardware::probe();
+    models
+        .into_iter()
+        .map(|m| {
+            let repo = m.id.clone();
+            let modalities = infer_modalities(&m);
+            let embed = m.tags.iter().any(|t| t.to_lowercase().contains("embed"))
+                || repo.to_lowercase().contains("embed");
+            // GGUF repos usually have a single primary file; we can't know exact
+            // size without listing files, so estimate from downloads rank instead.
+            let size_gb = estimate_size_gb(&m);
+            let fitness = classify((size_gb * 1024.0 * 1024.0 * 1024.0) as u64, &hw);
+            SearchHit {
+                id: repo.clone(),
+                repo,
+                default_file: guess_default_file(&m),
+                modalities,
+                context: 8192,
+                embed,
+                size_gb,
+                fitness,
+                downloads: m.downloads.unwrap_or(0),
+            }
+        })
+        .collect()
+}
+
+fn urlencode(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            b' ' => out.push('+'),
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
+}
+
+fn infer_modalities(m: &HfModel) -> Vec<String> {
+    let mut mods = vec!["text".to_string()];
+    let all = format!("{:?}", m.tags);
+    if all.to_lowercase().contains("vision") {
+        mods.push("vision".to_string());
+    }
+    if all.to_lowercase().contains("audio") {
+        mods.push("audio".to_string());
+    }
+    mods
+}
+
+fn guess_default_file(m: &HfModel) -> String {
+    // Common GGUF naming: <Model>-Q4_K_M.gguf. We can't list files without
+    // another request, so use a sensible default the user can edit.
+    format!("{}-Q4_K_M.gguf", m.id.split('/').last().unwrap_or(&m.id))
+}
+
+fn estimate_size_gb(m: &HfModel) -> f64 {
+    // Heuristic: smaller models are more common; rank by downloads if present.
+    // Without file listing we can't know exactly, so default to a mid size.
+    if m.tags.iter().any(|t| t.to_lowercase().contains("embedding")) {
+        return 0.5;
+    }
+    4.0
+}

@@ -7,58 +7,66 @@ mod commands;
 mod rag;
 mod team;
 
+use std::sync::Arc;
 use std::sync::Mutex;
+
+use zvec_rust;
 
 use rag::indexer::IndexerState;
 use rag::store::Store;
+use rag::vector_db::{self, ZvecPool};
+use engine::EngineState;
 use team::TeamState;
 
-#[derive(Default)]
+/// Global shared state — fully owned via Arc, no &'static leaks.
 pub struct AppState {
+    pub engine: EngineState,
+    pub store: Store,
+    pub indexer: IndexerState,
+    pub zvec: ZvecPool,
+    pub team: Mutex<Option<Arc<TeamState>>>,
     pub active_model: Mutex<Option<String>>,
 }
 
-pub struct GlobalState {
-    pub engine: &'static engine::EngineState,
-    pub store: &'static Store,
-    pub indexer: &'static IndexerState,
-    pub team: Mutex<Option<std::sync::Arc<TeamState>>>,
-}
-
-// Global handles used by engine::with_port and RAG pipeline.
-// Written exactly once during run(); read-only afterwards.
-#[allow(static_mut_refs)]
-pub static mut APP_STATE: Option<GlobalState> = None;
+/// Global handle for background threads (indexer, scheduler, team).
+/// Initialized once in run(); safe because Arc keeps data alive.
+pub static APP_STATE: std::sync::OnceLock<Arc<AppState>> = std::sync::OnceLock::new();
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    vector_db::init().expect("zvec_rust::initialize failed");
+
     let engine_state = engine::init_state();
     let store = Store::new().expect("failed to open rag.db");
     let indexer = IndexerState::new();
+    let zvec = ZvecPool::new(768).expect("ZvecPool::new");
 
-    let engine_static: &'static engine::EngineState = Box::leak(Box::new(engine_state));
-    let store_static: &'static Store = Box::leak(Box::new(store));
-    let indexer_static: &'static IndexerState = Box::leak(Box::new(indexer));
-
-    unsafe {
-        APP_STATE = Some(GlobalState {
-            engine: engine_static,
-            store: store_static,
-            indexer: indexer_static,
-            team: Mutex::new(None),
-        });
+    // Crash recovery: reset any files stuck in "indexing" back to "pending".
+    if let Ok(n) = store.reset_stuck_files() {
+        if n > 0 {
+            eprintln!("crash recovery: reset {n} stuck files to pending");
+        }
     }
+
+    let app_state = Arc::new(AppState {
+        engine: engine_state,
+        store,
+        indexer,
+        zvec,
+        team: Mutex::new(None),
+        active_model: Mutex::new(None),
+    });
+
+    APP_STATE.set(Arc::clone(&app_state)).ok();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
-        .manage(AppState::default())
-        .manage(engine_static)
-        .manage(store_static)
-        .manage(indexer_static)
+        .manage(Arc::clone(&app_state))
         .invoke_handler(tauri::generate_handler![
             commands::detect_hardware,
             commands::list_models,
+            commands::search_hf_models,
             download::download_model,
             engine::start_engine,
             engine::stop_engine,
@@ -72,12 +80,21 @@ pub fn run() {
             rag::indexer::list_indexed_files,
             rag::indexer::set_scheduler,
             rag::rag_chat,
+            rag::migrate_library,
             rag::export::export_library,
             rag::export::import_library,
             team::start_team_server_cmd,
             team::stop_team_server_cmd,
             team::team_status_cmd,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running RAGit");
+        .build(tauri::generate_context!())
+        .expect("error while building RAGit")
+        .run(|_app_handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                if let Some(state) = APP_STATE.get() {
+                    let _ = state.zvec.flush_all();
+                }
+                let _ = zvec_rust::shutdown();
+            }
+        });
 }

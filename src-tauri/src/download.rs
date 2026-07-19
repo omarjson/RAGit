@@ -77,28 +77,18 @@ pub fn download_model(
     });
 
     let mut hasher = Sha256::new();
-    let mut downloaded: u64 = 0;
-    let mut last_emit: u64 = 0;
 
     match resp.bytes() {
         Ok(bytes) => {
             hasher.update(&bytes);
-            downloaded = bytes.len() as u64;
+            let downloaded = bytes.len() as u64;
             if let Err(e) = std::fs::write(&dest, &bytes) {
                 let _ = on_event.send(DownloadEvent::Error {
                     message: e.to_string(),
                 });
                 return;
             }
-            // Progress (single-shot, but emit at start + end).
             if total > 0 {
-                let _ = on_event.send(DownloadEvent::Progress {
-                    downloaded,
-                    total_bytes: total,
-                });
-            }
-            if downloaded - last_emit > 1_000_000 || downloaded == total {
-                last_emit = downloaded;
                 let _ = on_event.send(DownloadEvent::Progress {
                     downloaded,
                     total_bytes: total,
@@ -131,6 +121,7 @@ pub fn download_model(
     let _ = app;
 }
 
+#[allow(dead_code)]
 pub fn model_path(filename: &str) -> Option<PathBuf> {
     let p = models_dir().join(filename);
     if p.exists() { Some(p) } else { None }

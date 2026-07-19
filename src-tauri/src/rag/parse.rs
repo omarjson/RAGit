@@ -62,14 +62,15 @@ pub fn parse_media(path: &Path) -> Option<String> {
         .to_lowercase();
     match ext.as_str() {
         "png" | "jpg" | "jpeg" | "webp" | "gif" => {
-            crate::rag::vision::describe_image(path)
+            crate::rag::vision::describe_image(path).ok()
         }
         "mp3" | "wav" | "m4a" | "ogg" | "flac" => {
-            crate::rag::vision::transcribe_media(path)
+            crate::rag::vision::transcribe_media(path).ok()
         }
         "mp4" | "mkv" | "mov" | "webm" | "avi" => {
             crate::rag::vision::describe_video_frames(path)
-                .or_else(|| crate::rag::vision::transcribe_media(path))
+                .or_else(|_| crate::rag::vision::transcribe_media(path))
+                .ok()
         }
         _ => None,
     }

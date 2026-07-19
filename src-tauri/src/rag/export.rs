@@ -1,9 +1,6 @@
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
-
-use crate::rag::store::Store;
 
 #[derive(Serialize, Deserialize)]
 struct ExportChunk {
@@ -33,7 +30,7 @@ struct ExportLibrary {
 #[tauri::command]
 pub fn export_library(path: String, library_id: Option<String>) -> Result<String, String> {
     let lib = library_id.unwrap_or_else(|| "default".to_string());
-    let store = unsafe { crate::APP_STATE.as_ref() }
+    let store = &crate::APP_STATE.get()
         .ok_or("app not initialized")?
         .store;
     let files = store.get_files(&lib).map_err(|e| e.to_string())?;
@@ -73,7 +70,7 @@ pub fn export_library(path: String, library_id: Option<String>) -> Result<String
 #[tauri::command]
 pub fn import_library(path: String, library_id: Option<String>) -> Result<String, String> {
     let lib = library_id.unwrap_or_else(|| "default".to_string());
-    let store = unsafe { crate::APP_STATE.as_ref() }
+    let store = &crate::APP_STATE.get()
         .ok_or("app not initialized")?
         .store;
     store.add_library(&lib, &lib).map_err(|e| e.to_string())?;
@@ -91,7 +88,13 @@ pub fn import_library(path: String, library_id: Option<String>) -> Result<String
             .map_err(|e| e.to_string())?;
         for c in f.chunks {
             let emb = if reembed {
-                crate::engine::with_port(|p| crate::rag::embed::embed(p, &c.content)).ok()
+                match crate::engine::with_port(|p| crate::rag::embed::embed(p, &c.content)) {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        eprintln!("import re-embed failed for chunk {}: {e}", c.chunk_index);
+                        None
+                    }
+                }
             } else {
                 None
             };

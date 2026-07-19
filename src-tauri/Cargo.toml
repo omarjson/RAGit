@@ -36,5 +36,9 @@ rand = "0.8"
 chrono = { version = "0.4", features = ["serde"] }
 hmac = "0.12"
 hex = "0.4"
+sysinfo = "0.33"
+r2d2 = "0.8"
+r2d2_sqlite = "0.25"
+zvec-rust = "0.5.1"
 
 [features]

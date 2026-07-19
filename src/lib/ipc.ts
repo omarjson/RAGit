@@ -1,41 +1,43 @@
-import { invoke, Channel, isTauri } from "@tauri-apps/api/core";
+import { invoke, Channel } from "@tauri-apps/api/core";
+import type {
+  HardwareInfo,
+  Fitness,
+  ModelVariant,
+  CatalogModel,
+  SearchHit,
+  DownloadEvent,
+  EngineStatus,
+  ChatRole,
+  ChatMessage,
+  ChatEvent,
+  IndexProgress,
+  IndexedFile,
+  TeamUser,
+} from "./ipc/types";
+
+export type {
+  HardwareInfo,
+  Fitness,
+  ModelVariant,
+  CatalogModel,
+  SearchHit,
+  DownloadEvent,
+  EngineStatus,
+  ChatRole,
+  ChatMessage,
+  ChatEvent,
+  IndexProgress,
+  IndexedFile,
+  TeamUser,
+};
 
 export function runningInTauri(): boolean {
   try {
-    return isTauri();
+    const w = window as unknown as Record<string, unknown>;
+    return Boolean(w["__TAURI_INTERNALS__"] || w["__TAURI__"]);
   } catch {
     return false;
   }
-}
-
-export interface HardwareInfo {
-  os: string;
-  arch: string;
-  cpuCores: number;
-  cpuBrand: string;
-  totalRamBytes: number;
-  gpuBackend: string;
-  gpuName: string | null;
-  vramBytes: number | null;
-}
-
-export type Fitness = "Fits" | "Tight" | "TooBig";
-
-export interface ModelVariant {
-  quant: string;
-  sizeGb: number;
-  fitness: Fitness;
-}
-
-export interface CatalogModel {
-  id: string;
-  name: string;
-  repo: string;
-  defaultFile: string;
-  modalities: string[];
-  context: number;
-  embed: boolean;
-  variants: ModelVariant[];
 }
 
 export function detectHardware(): Promise<HardwareInfo> {
@@ -46,12 +48,9 @@ export function listModels(): Promise<CatalogModel[]> {
   return invoke("list_models");
 }
 
-export type DownloadEvent =
-  | { event: "started"; data: { url: string; totalBytes: number } }
-  | { event: "progress"; data: { downloaded: number; totalBytes: number } }
-  | { event: "verified"; data: { sha256: string } }
-  | { event: "finished"; data: { path: string } }
-  | { event: "error"; data: { message: string } };
+export function searchModels(query: string): Promise<SearchHit[]> {
+  return invoke("search_hf_models", { query });
+}
 
 export function downloadModel(
   repo: string,
@@ -67,16 +66,6 @@ export function downloadModel(
     expectedSha256,
     onEvent: channel,
   });
-}
-
-export interface EngineStatus {
-  running: boolean;
-  modelPath: string | null;
-  port: number | null;
-  measuredTps: number | null;
-  backend: string | null;
-  embedModel: string | null;
-  embedPort: number | null;
 }
 
 export function startEngine(
@@ -125,19 +114,6 @@ export function engineStatus(): Promise<EngineStatus> {
   return invoke("engine_status");
 }
 
-export type ChatRole = "system" | "user" | "assistant";
-
-export interface ChatMessage {
-  role: ChatRole;
-  content: string;
-}
-
-export type ChatEvent =
-  | { event: "start"; data: { model: string } }
-  | { event: "token"; data: { text: string } }
-  | { event: "done"; data: { tokens: number } }
-  | { event: "error"; data: { message: string } };
-
 export function chatStream(
   messages: ChatMessage[],
   onEvent: (e: ChatEvent) => void
@@ -163,16 +139,6 @@ export function indexLibrary(
   });
 }
 
-export interface IndexProgress {
-  libraryId: string;
-  total: number;
-  processed: number;
-  currentFile: string;
-  level: number;
-  status: string;
-  message: string;
-}
-
 export function pauseIndex(libraryId?: string): Promise<void> {
   return invoke("pause_index", { libraryId });
 }
@@ -183,18 +149,6 @@ export function resumeIndex(libraryId?: string): Promise<void> {
 
 export function cancelIndex(libraryId?: string): Promise<void> {
   return invoke("cancel_index", { libraryId });
-}
-
-export interface IndexedFile {
-  id: number;
-  libraryId: string;
-  path: string;
-  fileName: string;
-  contentHash: string;
-  status: string;
-  level: number;
-  chunks: number;
-  error: string | null;
 }
 
 export function listIndexedFiles(
@@ -211,8 +165,6 @@ export function setScheduler(
   return invoke("set_scheduler", { libraryId, enabled, intervalSecs });
 }
 
-// ---- Team Mode ----
-
 export function startTeamServer(port?: number): Promise<string> {
   return invoke("start_team_server_cmd", { port });
 }
@@ -223,12 +175,6 @@ export function stopTeamServer(): Promise<string> {
 
 export function teamStatus(): Promise<boolean> {
   return invoke("team_status_cmd");
-}
-
-export interface TeamUser {
-  id: string;
-  username: string;
-  role: string;
 }
 
 export async function teamApi(
