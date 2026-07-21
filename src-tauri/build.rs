@@ -1,9 +1,13 @@
 fn main() {
     tauri_build::build();
 
-    // Copy zvec_c_api.dll next to the exe so it resolves at runtime.
-    // zvec-rust-sys with `bundled` places it at:
+    // Copy the zvec shared library next to the exe so it resolves at runtime.
+    // zvec-rust-sys with `bundled` downloads a prebuilt library to:
     //   target/<profile>/build/zvec-rust-sys-<hash>/out/zvec-prebuilt/
+    //
+    // On Windows: zvec_c_api.dll
+    // On Linux:   libzvec_c_api.so
+    // On macOS:   libzvec_c_api.dylib
     let profile = std::env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());
     let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     let target_dir = std::path::Path::new(&manifest)
@@ -11,8 +15,18 @@ fn main() {
         .and_then(|p| p.parent())
         .map(|p| p.join("target").join(&profile))
         .expect("target dir");
-    let dll_name = "zvec_c_api.dll";
-    let dest = target_dir.join(dll_name);
+
+    let lib_name = if cfg!(windows) {
+        "zvec_c_api.dll"
+    } else if cfg!(target_os = "linux") {
+        "libzvec_c_api.so"
+    } else if cfg!(target_os = "macos") {
+        "libzvec_c_api.dylib"
+    } else {
+        return;
+    };
+
+    let dest = target_dir.join(lib_name);
     if dest.exists() {
         return;
     }
@@ -23,10 +37,10 @@ fn main() {
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
             if name_str.contains("zvec-rust-sys") {
-                let src = entry.path().join("out").join("zvec-prebuilt").join(dll_name);
+                let src = entry.path().join("out").join("zvec-prebuilt").join(lib_name);
                 if src.exists() {
                     if std::fs::copy(&src, &dest).is_ok() {
-                        println!("cargo:warning=zvec DLL copied to {}", dest.display());
+                        println!("cargo:warning=zvec library copied to {}", dest.display());
                     }
                 }
                 break;
