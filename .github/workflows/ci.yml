@@ -92,7 +92,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   release-linux:
-    name: Build Linux AppImage
+    name: Build Linux packages
     needs: [frontend, rust]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
@@ -132,12 +132,18 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
       - name: npm install
         run: npm install
-      - name: tauri build (linux AppImage)
+      - name: tauri build (linux deb + rpm + AppImage)
         run: npm run tauri build
+        env:
+          # Ensure linuxdeploy can find libzvec_c_api.so during AppImage bundling
+          LD_LIBRARY_PATH: src-tauri/target/release
       - name: Upload Release assets (Linux)
         uses: softprops/action-gh-release@v2
         with:
-          files: src-tauri/target/release/bundle/AppImage/*.AppImage
+          files: |
+            src-tauri/target/release/bundle/deb/*.deb
+            src-tauri/target/release/bundle/rpm/*.rpm
+            src-tauri/target/release/bundle/appimage/*.AppImage
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
