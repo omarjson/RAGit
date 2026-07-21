@@ -10,9 +10,27 @@ use tauri::Manager;
 
 use crate::AppState;
 
-const LLAMA_RELEASE: &str = "b10066";
-const LLAMA_ZIP_URL: &str =
-    "https://github.com/ggml-org/llama.cpp/releases/download/b10066/llama-b10066-bin-win-cpu-x64.zip";
+fn server_bin_name() -> &'static str {
+    if std::env::consts::OS == "windows" {
+        "llama-server.exe"
+    } else {
+        "llama-server"
+    }
+}
+
+fn platform_zip_url() -> &'static str {
+    match std::env::consts::OS {
+        "linux" => "https://github.com/ggml-org/llama.cpp/releases/download/b10066/llama-b10066-bin-linux-x64.zip",
+        "macos" => {
+            if std::env::consts::ARCH == "aarch64" {
+                "https://github.com/ggml-org/llama.cpp/releases/download/b10066/llama-b10066-bin-osx-arm64.zip"
+            } else {
+                "https://github.com/ggml-org/llama.cpp/releases/download/b10066/llama-b10066-bin-osx-x64.zip"
+            }
+        }
+        _ => "https://github.com/ggml-org/llama.cpp/releases/download/b10066/llama-b10066-bin-win-cpu-x64.zip",
+    }
+}
 
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -43,7 +61,7 @@ fn engine_dir() -> std::path::PathBuf {
 }
 
 fn server_bin() -> std::path::PathBuf {
-    engine_dir().join("llama-server.exe")
+    engine_dir().join(server_bin_name())
 }
 
 fn models_dir() -> std::path::PathBuf {
@@ -78,7 +96,7 @@ pub fn ensure_binary() -> Result<(), String> {
         .build()
         .map_err(|e| e.to_string())?;
     let bytes = client
-        .get(LLAMA_ZIP_URL)
+        .get(platform_zip_url())
         .send()
         .map_err(|e| e.to_string())?
         .bytes()
@@ -90,7 +108,7 @@ pub fn ensure_binary() -> Result<(), String> {
     let mut found = false;
     for i in 0..archive.len() {
         let mut f = archive.by_index(i).map_err(|e| e.to_string())?;
-        if f.name().eq_ignore_ascii_case("llama-server.exe") {
+        if f.name().eq_ignore_ascii_case(server_bin_name()) {
             let mut out = std::fs::File::create(server_bin()).map_err(|e| e.to_string())?;
             std::io::copy(&mut f, &mut out).map_err(|e| e.to_string())?;
             found = true;
@@ -98,7 +116,7 @@ pub fn ensure_binary() -> Result<(), String> {
         }
     }
     let _ = std::fs::remove_file(&zip);
-    if found { Ok(()) } else { Err("llama-server.exe not found in archive".into()) }
+    if found { Ok(()) } else { Err(format!("{} not found in archive", server_bin_name())) }
 }
 
 fn is_listening(port: u16) -> bool {
@@ -121,14 +139,19 @@ fn measure_speed(app: &tauri::AppHandle, port: u16) -> Option<f64> {
         "max_tokens": 8,
         "temperature": 0.0,
     });
+    let start = std::time::Instant::now();
     let resp = client.post(&url).json(&body).send().ok()?;
     let json: serde_json::Value = resp.json().ok()?;
+    let elapsed = start.elapsed().as_secs_f64();
     let text = json
         .pointer("/choices/0/message/content")?
         .as_str()
         .unwrap_or("")
         .to_string();
-    let tps = if text.is_empty() { 0.0 } else { (text.len() as f64) / 4.0 };
+    // llama.cpp non-streaming response doesn't include token count; estimate
+    // using the 4-chars-per-token heuristic, then compute tokens/sec.
+    let est_tokens = if text.is_empty() { 0.0 } else { (text.len() as f64) / 4.0 };
+    let tps = if elapsed > 0.0 { est_tokens / elapsed } else { est_tokens };
     let est = app.state::<Arc<AppState>>();
     let mut st = est.engine.status.lock().ok()?;
     st.measured_tps = Some(tps);
@@ -366,7 +389,7 @@ fn spawn_server(
     }
 
     for attempt in 0..10 {
-        let p = port + attempt;
+        let p = port.saturating_add(attempt as u16);
         let mut command = Command::new(&bin);
         command
             .arg("-m").arg(&resolved)

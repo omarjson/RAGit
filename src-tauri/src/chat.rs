@@ -97,6 +97,8 @@ pub fn chat_stream(
                 .and_then(|v| v.as_str())
             {
                 if !delta.is_empty() {
+                    // Approximate: counts delta chunks, not actual tokens.
+                    // The SSE response doesn't include token count.
                     tokens += 1;
                     let _ = on_event.send(ChatEvent::Token {
                         text: delta.to_string(),

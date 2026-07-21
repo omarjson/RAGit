@@ -60,7 +60,7 @@ export function Indexing() {
             <span>{job.currentFile || "Starting…"}</span>
           </div>
           <div className="font-mono text-[11px] text-muted">
-            {LEVEL_LABELS[job.level as IndexLevel]} · {job.status} · {job.processed}/{job.total}
+            {LEVEL_LABELS[(job.level as IndexLevel) || 4]} · {job.status} · {job.processed}/{job.total}
           </div>
           <ProgressBar percent={pct} />
           <div className="truncate font-mono text-[11px] text-muted">{job.message}</div>

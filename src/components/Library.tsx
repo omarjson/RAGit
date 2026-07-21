@@ -44,7 +44,7 @@ export function Library() {
       m.save({ defaultPath: "default.json", filters: [{ name: "JSON", extensions: ["json"] }] })
     );
     if (!p) return;
-    try { setStatus(await exportLibrary(p as string)); } catch (e) { setStatus(`⚠ ${String(e)}`); }
+    try { setStatus(await exportLibrary(p)); } catch (e) { setStatus(`⚠ ${String(e)}`); }
   };
 
   const doImport = async () => {
@@ -53,7 +53,7 @@ export function Library() {
     );
     if (!f) return;
     try {
-      setStatus(await importLibrary(f as string));
+      setStatus(await importLibrary(f));
       refreshFiles();
     } catch (e) { setStatus(`⚠ ${String(e)}`); }
   };

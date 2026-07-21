@@ -62,27 +62,26 @@ pub fn index_path(store: &Store, library_id: &str, path: &str) -> Result<(usize,
 
 /// Retrieve top-k chunks for a query and format as context string.
 pub fn retrieve_context(
-    store: &Store,
+    _store: &Store,
     library_id: &str,
     query: &str,
     k: usize,
 ) -> Result<String, String> {
-    retrieve_context_impl(store, library_id, query, k, false)
+    retrieve_context_impl(library_id, query, k, false)
 }
 
 /// Retrieve with reranking: over-fetch candidates by vector similarity, then
 /// re-rank by lexical overlap (keyword match) between query and chunk.
 pub fn retrieve_context_rerank(
-    store: &Store,
+    _store: &Store,
     library_id: &str,
     query: &str,
     k: usize,
 ) -> Result<String, String> {
-    retrieve_context_impl(store, library_id, query, k, true)
+    retrieve_context_impl(library_id, query, k, true)
 }
 
 fn retrieve_context_impl(
-    _store: &Store,
     library_id: &str,
     query: &str,
     k: usize,
@@ -117,7 +116,7 @@ fn retrieve_context_impl(
             .field_name("embedding")
             .vector(&emb)
             .topk(k as i32)
-            .filter(&format!("library_id = '{library_id}'"))
+            .filter(&format!("library_id = '{}'", library_id.replace("'", "''")))
             .build()
             .map_err(|e| e.to_string())?;
         coll.query(&sq).map_err(|e| e.to_string())?

@@ -78,10 +78,10 @@ export function TeamProvider({ children }: { children: ReactNode }) {
     setLoading(true);
     setError(null);
     try {
-      const data = (await teamApi("POST", "/api/login", { username, password })) as { token: string; user: { id: string; username: string; role: string } };
+      const data = (await teamApi("POST", "/api/login", { username, password })) as { token: string; role: string; user_id: string };
       setToken(data.token);
-      setRole(data.user.role);
-      setMe(data.user.username);
+      setRole(data.role);
+      setMe(data.user_id);
       await fetchUsers(data.token);
     } catch (e) {
       setError(String(e));

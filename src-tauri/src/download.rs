@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::path::PathBuf;
 
 use serde::Serialize;
@@ -54,7 +55,7 @@ pub fn download_model(
         .build()
         .unwrap_or_else(|_| reqwest::blocking::Client::new());
 
-    let resp = match client.get(&url).send() {
+    let mut resp = match client.get(&url).send() {
         Ok(r) if r.status().is_success() => r,
         Ok(r) => {
             let _ = on_event.send(DownloadEvent::Error {
@@ -78,28 +79,45 @@ pub fn download_model(
 
     let mut hasher = Sha256::new();
 
-    match resp.bytes() {
-        Ok(bytes) => {
-            hasher.update(&bytes);
-            let downloaded = bytes.len() as u64;
-            if let Err(e) = std::fs::write(&dest, &bytes) {
-                let _ = on_event.send(DownloadEvent::Error {
-                    message: e.to_string(),
-                });
-                return;
-            }
-            if total > 0 {
-                let _ = on_event.send(DownloadEvent::Progress {
-                    downloaded,
-                    total_bytes: total,
-                });
-            }
-        }
+    let mut file = match std::fs::File::create(&dest) {
+        Ok(f) => f,
         Err(e) => {
             let _ = on_event.send(DownloadEvent::Error {
                 message: e.to_string(),
             });
             return;
+        }
+    };
+
+    let mut downloaded: u64 = 0;
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = match std::io::Read::read(&mut resp, &mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) => {
+                let _ = on_event.send(DownloadEvent::Error {
+                    message: e.to_string(),
+                });
+                let _ = std::fs::remove_file(&dest);
+                return;
+            }
+        };
+        let chunk = &buf[..n];
+        hasher.update(chunk);
+        if let Err(e) = file.write_all(chunk) {
+            let _ = on_event.send(DownloadEvent::Error {
+                message: e.to_string(),
+            });
+            let _ = std::fs::remove_file(&dest);
+            return;
+        }
+        downloaded += n as u64;
+        if total > 0 {
+            let _ = on_event.send(DownloadEvent::Progress {
+                downloaded,
+                total_bytes: total,
+            });
         }
     }
 

@@ -145,7 +145,7 @@ async fn register(
     headers: HeaderMap,
     Json(req): Json<RegisterReq>,
 ) -> impl IntoResponse {
-    let existing = state.store.list_users().map(|u| u.len()).unwrap_or(0);
+    let existing = state.store.user_count().unwrap_or(0);
     let role = if existing == 0 {
         Role::Admin
     } else {

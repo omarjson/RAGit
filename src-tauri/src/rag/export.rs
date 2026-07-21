@@ -78,7 +78,8 @@ pub fn import_library(path: String, library_id: Option<String>) -> Result<String
     let export: ExportLibrary = serde_json::from_str(&text).map_err(|e| e.to_string())?;
     let mut file_count = 0;
     let mut chunk_count = 0;
-    let reembed = crate::engine::embed_port().is_some();
+    let reembed = crate::engine::embed_port().is_some()
+        || crate::engine::with_port(|_| Ok(true)).is_ok();
     for f in export.files {
         let file_id = store
             .upsert_file(&lib, &f.path, &f.file_name, &f.content_hash)

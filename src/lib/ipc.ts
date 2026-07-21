@@ -14,6 +14,7 @@ import type {
   IndexedFile,
   TeamUser,
 } from "./ipc/types";
+import { TEAM_PORT } from "./ipc/constants";
 
 export type {
   HardwareInfo,
@@ -183,7 +184,7 @@ export async function teamApi(
   body?: unknown,
   token?: string | null
 ): Promise<unknown> {
-  const base = `http://localhost:11436${path}`;
+  const base = `http://localhost:${TEAM_PORT}${path}`;
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (token) headers["Authorization"] = `Bearer ${token}`;
   const res = await fetch(base, {

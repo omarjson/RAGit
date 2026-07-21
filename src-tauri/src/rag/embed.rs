@@ -3,6 +3,12 @@ use std::time::Duration;
 use serde_json::Value;
 
 /// Returns an embedding vector for a single text.
+///
+/// Dimension validation only runs when `embed_dim()` is set, which happens
+/// when a dedicated embed engine is started. If the chat engine is used for
+/// embeddings (via the `--embedding` flag), `embed_dim()` returns `None` and
+/// validation is skipped — this is acceptable because the chat engine's
+/// embedding dimension is consistent within a session.
 pub fn embed(port: u16, text: &str) -> Result<Vec<f32>, String> {
     let dim = crate::engine::embed_dim();
     let vec = call_embed(port, &[text])?

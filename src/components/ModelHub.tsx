@@ -54,13 +54,13 @@ function VariantRow({
       } else if (e.event === "error") {
         setState("error");
       }
-    }).catch(() => setState("error"));
+    }).catch((e) => { console.error("Download failed:", e); setState("error"); });
   };
 
   const handleLaunch = async () => {
     try {
-      const emb = embedModel ? `models/${embedModel}` : undefined;
-      await start(`models/${fileName}`, undefined, undefined, emb);
+      const emb = embedModel ? embedModel : undefined;
+      await start(fileName, undefined, undefined, emb);
     } catch { /* error surfaced in context */ }
   };
 

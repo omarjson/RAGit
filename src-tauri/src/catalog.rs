@@ -85,7 +85,7 @@ pub fn load_catalog() -> Vec<CatalogModel> {
     let yaml = include_str!("../../catalog/models.yaml");
     let catalog: Catalog =
         serde_yaml::from_str(yaml).unwrap_or(Catalog { models: vec![] });
-    let hw = crate::hardware::probe();
+    let hw = crate::hardware::probe_cached();
     catalog
         .models
         .into_iter()
@@ -98,7 +98,7 @@ pub fn load_catalog() -> Vec<CatalogModel> {
                     ModelVariant {
                         quant: quant.clone(),
                         size_gb: *gb,
-                        fitness: classify(size_bytes, &hw),
+                        fitness: classify(size_bytes, hw),
                     }
                 })
                 .collect();
@@ -159,7 +159,7 @@ pub fn search_hf(query: String) -> Vec<SearchHit> {
         Ok(m) => m,
         Err(_) => return vec![],
     };
-    let hw = crate::hardware::probe();
+    let hw = crate::hardware::probe_cached();
     models
         .into_iter()
         .map(|m| {
@@ -170,7 +170,7 @@ pub fn search_hf(query: String) -> Vec<SearchHit> {
             // GGUF repos usually have a single primary file; we can't know exact
             // size without listing files, so estimate from downloads rank instead.
             let size_gb = estimate_size_gb(&m);
-            let fitness = classify((size_gb * 1024.0 * 1024.0 * 1024.0) as u64, &hw);
+            let fitness = classify((size_gb * 1024.0 * 1024.0 * 1024.0) as u64, hw);
             SearchHit {
                 id: repo.clone(),
                 repo,

@@ -42,7 +42,7 @@ export function IndexSidebar({ level, onLevelChange, ragMode, onRagModeChange, r
 
       {job && (
         <div className="space-y-2 rounded-sm border border-[#2A2D45] p-2">
-          <div className="font-mono text-[11px] text-[#A5ABB8]">{job.status} · {job.processed}/{job.total} · {LEVEL_LABELS[job.level as IndexLevel]}</div>
+          <div className="font-mono text-[11px] text-[#A5ABB8]">{job.status} · {job.processed}/{job.total} ·             {LEVEL_LABELS[(job.level as IndexLevel) || 4]}</div>
           <ProgressBar percent={pct} />
           <div className="truncate font-mono text-[11px] text-muted">{job.message}</div>
           <div className="flex gap-2">

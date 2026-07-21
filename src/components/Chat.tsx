@@ -17,11 +17,21 @@ export function Chat() {
   const [level, setLevel] = useState<IndexLevel>(4);
   const scrollRef = useRef<HTMLDivElement>(null);
   const streamRef = useRef(false);
+  const pendingTokens = useRef<string>("");
+  const flushTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const engineUp = engine?.running ?? false;
 
   useEffect(() => { refreshFiles(); }, [refreshFiles]);
-  useEffect(() => { scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight }); }, [msgs]);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el && el.scrollHeight - el.scrollTop - el.clientHeight < 50) {
+      el.scrollTo({ top: el.scrollHeight });
+    }
+  }, [msgs]);
+  useEffect(() => () => {
+    if (flushTimer.current) clearTimeout(flushTimer.current);
+  }, []);
 
   const send = async () => {
     const text = input.trim();
@@ -33,6 +43,26 @@ export function Chat() {
     setStreaming(true);
     streamRef.current = true;
 
+    const applyPending = () => {
+      if (pendingTokens.current) {
+        setMsgs((prev) => {
+          const copy = [...prev];
+          if (copy.length > 0 && copy[copy.length - 1].role === "assistant") {
+            copy[copy.length - 1] = { role: "assistant", content: copy[copy.length - 1].content + pendingTokens.current };
+          } else {
+            copy.push({ role: "assistant", content: pendingTokens.current });
+          }
+          return copy;
+        });
+        pendingTokens.current = "";
+      }
+    };
+
+    const scheduleFlush = () => {
+      if (flushTimer.current) clearTimeout(flushTimer.current);
+      flushTimer.current = setTimeout(applyPending, 0);
+    };
+
     try {
       if (ragMode && engineUp) {
         const answer = await ragChat(text, undefined, msgs, rerank);
@@ -40,16 +70,11 @@ export function Chat() {
       } else if (engineUp) {
         await chatStream(next, (e) => {
           if (e.event === "token" && streamRef.current) {
-            setMsgs((prev) => {
-              const copy = [...prev];
-              if (copy.length > 0 && copy[copy.length - 1].role === "assistant") {
-                copy[copy.length - 1] = { role: "assistant", content: copy[copy.length - 1].content + e.data.text };
-              } else {
-                copy.push({ role: "assistant", content: e.data.text });
-              }
-              return copy;
-            });
+            pendingTokens.current += e.data.text;
+            scheduleFlush();
           } else if (e.event === "error" && streamRef.current) {
+            if (flushTimer.current) clearTimeout(flushTimer.current);
+            applyPending();
             setMsgs((prev) => [...prev, { role: "assistant", content: `⚠ ${e.data.message}` }]);
           }
         });
@@ -59,6 +84,8 @@ export function Chat() {
     } catch (err) {
       if (streamRef.current) setMsgs((prev) => [...prev, { role: "assistant", content: `⚠ ${String(err)}` }]);
     } finally {
+      if (flushTimer.current) clearTimeout(flushTimer.current);
+      applyPending();
       setStreaming(false);
       streamRef.current = false;
     }

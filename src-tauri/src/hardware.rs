@@ -1,5 +1,6 @@
 ﻿use serde::Serialize;
 use std::process::Command;
+use std::sync::OnceLock;
 use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
 
 /// Cross-platform hardware probe used to decide whether a model fits on this machine.
@@ -16,10 +17,20 @@ pub struct HardwareInfo {
     pub vram_bytes: Option<u64>,
 }
 
-fn detect_gpu() -> (String, Option<String>, Option<u64>) {
+fn detect_gpu_and_vram() -> (String, Option<String>, Option<u64>) {
     // Real GPU detection via WMI/CIM (works on Windows 10/11).
-    let tmp = std::env::temp_dir().join("ragit_hw_probe.ps1");
-    let query = "(Get-CimInstance Win32_VideoController | Select-Object -First 1).Name";
+    // Single PowerShell call returns both GPU name and VRAM, avoiding temp-file races.
+    let tmp = std::env::temp_dir().join(format!(
+        "ragit_hw_probe_{}.ps1",
+        std::process::id()
+    ));
+    let query = r#"
+$v = Get-CimInstance Win32_VideoController | Select-Object -First 1
+if ($v) {
+    $v.Name
+    $v.AdapterRAM
+}
+"#;
     if std::fs::write(&tmp, query).is_err() {
         return ("unknown".to_string(), None, None);
     }
@@ -35,12 +46,31 @@ fn detect_gpu() -> (String, Option<String>, Option<u64>) {
         .output();
     let _ = std::fs::remove_file(&tmp);
 
-    let name = match out {
+    let (name, vram) = match out {
         Ok(o) if o.status.success() => {
-            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if s.is_empty() { None } else { Some(s) }
+            let stdout = String::from_utf8_lossy(&o.stdout);
+            let lines: Vec<&str> = stdout.lines().collect();
+            let name = lines
+                .first()
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
+            let vram = lines
+                .get(1)
+                .and_then(|s| s.trim().replace(',', "").parse::<u64>().ok());
+            (name, vram)
         }
-        _ => None,
+        Ok(o) => {
+            eprintln!(
+                "hardware probe: PowerShell exited with status {:?}, stderr: {}",
+                o.status,
+                String::from_utf8_lossy(&o.stderr).trim()
+            );
+            (None, None)
+        }
+        Err(e) => {
+            eprintln!("hardware probe: failed to run PowerShell: {e}");
+            (None, None)
+        }
     };
 
     let (backend, name) = match name {
@@ -59,39 +89,14 @@ fn detect_gpu() -> (String, Option<String>, Option<u64>) {
         None => ("unknown".to_string(), None),
     };
 
-    (backend, name, None)
+    (backend, name, vram)
 }
 
-fn detect_vram() -> Option<u64> {
-    // sysinfo does not expose VRAM on Windows reliably, so best-effort via
-    // PowerShell / CIM. Returns None if it cannot be determined.
-    let tmp = std::env::temp_dir().join("ragit_hw_probe.ps1");
-    let query = "Get-CimInstance Win32_VideoController | Where-Object { $_.AdapterRAM } | Select-Object -First 1 | ForEach-Object { $_.AdapterRAM }";
-    if std::fs::write(&tmp, query).is_err() {
-        return None;
-    }
-    let out = Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            &tmp.to_string_lossy(),
-        ])
-        .output();
-    let _ = std::fs::remove_file(&tmp);
-    if let Ok(out) = out {
-        if out.status.success() {
-            let s = String::from_utf8_lossy(&out.stdout);
-            return s
-                .trim()
-                .replace(',', "")
-                .parse::<u64>()
-                .ok();
-        }
-    }
-    None
+static HW_CACHE: OnceLock<HardwareInfo> = OnceLock::new();
+
+/// Cached hardware probe — avoids repeated PowerShell calls on every catalog load.
+pub fn probe_cached() -> &'static HardwareInfo {
+    HW_CACHE.get_or_init(probe)
 }
 
 pub fn probe() -> HardwareInfo {
@@ -108,8 +113,7 @@ pub fn probe() -> HardwareInfo {
 
     let total_ram_bytes = sys.total_memory(); // sysinfo 0.33 reports bytes
 
-    let (gpu_backend, gpu_name, _) = detect_gpu();
-    let vram_bytes = detect_vram();
+    let (gpu_backend, gpu_name, vram_bytes) = detect_gpu_and_vram();
 
     HardwareInfo {
         os: std::env::consts::OS.to_string(),

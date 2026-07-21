@@ -12,7 +12,7 @@ export function FileList({ files }: { files: IndexedFile[] }) {
           <span className="truncate text-[#D0D2E0]">{f.fileName}</span>
           <div className="flex items-center gap-2 text-[11px] font-mono">
             <span className={
-              f.status === "done" ? "text-accent" : f.status === "error" ? "text-red-400" : "text-muted"
+              f.status === "done" ? "text-emerald-400" : f.status === "error" ? "text-red-400" : "text-muted"
             }>
               {f.status} · L{f.level} · {f.chunks}
             </span>
@@ -35,7 +35,7 @@ export function FileListCompact({ files }: { files: IndexedFile[] }) {
       {files.map((f) => (
         <div key={f.id} className="flex items-center justify-between py-0.5 font-mono text-[11px]">
           <span className="truncate text-[#A5ABB8]">{f.fileName}</span>
-          <span className={f.status === "done" ? "text-accent" : f.status === "error" ? "text-red-400" : "text-muted"}>
+            <span className={f.status === "done" ? "text-emerald-400" : f.status === "error" ? "text-red-400" : "text-muted"}>
             {f.status} · L{f.level} · {f.chunks}
           </span>
         </div>

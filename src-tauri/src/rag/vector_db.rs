@@ -9,17 +9,6 @@ use zvec_rust::{
 
 /// Initialize the zvec-rust runtime. Must be called once before any other zvec API.
 pub fn init() -> Result<(), String> {
-    // Belt-and-suspenders: try to add the exe's directory to PATH (DLL beside exe).
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let dir_str = dir.to_string_lossy().to_string();
-            let current = std::env::var("PATH").unwrap_or_default();
-            if !current.contains(&dir_str) {
-                unsafe { std::env::set_var("PATH", format!("{dir_str};{current}")); }
-            }
-        }
-    }
-
     let config = ConfigBuilder::new()
         .memory_limit(512 * 1024 * 1024)
         .num_threads(4)
@@ -66,7 +55,8 @@ impl ZvecPool {
             Collection::open(path_str, None).map_err(|e| e.to_string())?
         } else {
             std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-            let schema = Self::build_schema(self.dim())?;
+            let dim = crate::engine::embed_dim().map(|d| d as u32).unwrap_or_else(|| self.dim());
+            let schema = Self::build_schema(dim)?;
             Collection::create_and_open(path_str, &schema, None).map_err(|e| e.to_string())?
         };
         let arc = Arc::new(coll);

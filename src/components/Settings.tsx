@@ -49,9 +49,6 @@ export function Settings() {
     }).catch((e) => setCatalogErr(String(e)));
   }, []);
 
-  // pre-fill model list if empty when settings.selectedModel changes
-  useEffect(() => { if (!settings.selectedModel && models.length > 0) update({ selectedModel: models[0].defaultFile }); }, [models]);
-
   return (
     <div className="p-6">
       <h1 className="mb-1 text-2xl font-semibold">Settings</h1>
@@ -99,18 +96,24 @@ export function Settings() {
 
           <label className="flex flex-col gap-1">
             <span className="text-muted">GPU layers</span>
-            <input type="number" value={settings.gpuLayers} onChange={(e) => update({ gpuLayers: Number(e.target.value) })}
+            <input type="number" value={settings.gpuLayers} onChange={(e) => {
+              if (e.target.value === "") update({ gpuLayers: 0 });
+              else { const v = Number(e.target.value); if (!Number.isNaN(v)) update({ gpuLayers: v }); }
+            }}
               className="input-field font-mono text-xs" />
           </label>
 
           <label className="flex flex-col gap-1">
             <span className="text-muted">Context size</span>
-            <input type="number" value={settings.contextSize} onChange={(e) => update({ contextSize: Number(e.target.value) })}
+            <input type="number" value={settings.contextSize} onChange={(e) => {
+              if (e.target.value === "") update({ contextSize: 8192 });
+              else { const v = Number(e.target.value); if (!Number.isNaN(v)) update({ contextSize: v }); }
+            }}
               className="input-field font-mono text-xs" />
           </label>
 
           <div className="mt-2 flex gap-2">
-            <button disabled={engBusy || engine?.running} onClick={() => start(`models/${settings.selectedModel}`, undefined, settings.gpuLayers)}
+            <button disabled={engBusy || engine?.running} onClick={() => start(settings.selectedModel ?? "", undefined, settings.gpuLayers)}
               className="btn-primary text-xs px-3 py-1.5">
               <Play size={13} /> Start Engine
             </button>

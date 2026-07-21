@@ -136,8 +136,6 @@ impl Store {
             );",
         )
         .map_err(|e| e.to_string())?;
-        // Schema migration: add columns that may not exist in older DBs.
-        let _ = conn.execute_batch("ALTER TABLE libraries ADD COLUMN index_cursor TEXT;");
         Ok(())
     }
 
@@ -330,6 +328,14 @@ impl Store {
             })
             .map_err(|e| e.to_string())?;
         Ok(rows.next().transpose().map_err(|e| e.to_string())?)
+    }
+
+    pub fn user_count(&self) -> Result<usize, String> {
+        let conn = self.conn()?;
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0))
+            .map_err(|e| e.to_string())?;
+        Ok(count as usize)
     }
 
     pub fn list_users(&self) -> Result<Vec<(String, String, String)>, String> {
@@ -561,10 +567,13 @@ impl Store {
 }
 
 pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() {
+        return 0.0;
+    }
     let mut dot = 0.0f32;
     let mut na = 0.0f32;
     let mut nb = 0.0f32;
-    for i in 0..a.len().min(b.len()) {
+    for i in 0..a.len() {
         dot += a[i] * b[i];
         na += a[i] * a[i];
         nb += b[i] * b[i];

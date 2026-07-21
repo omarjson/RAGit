@@ -199,11 +199,7 @@ fn chunk_and_summarize(text: &str, target: u8) -> (Vec<String>, u8) {
     }
 
     if target >= 3 {
-        if let Some(port) = engine::embed_port().or_else(|| {
-            crate::APP_STATE.get()
-                .and_then(|s| s.engine.status.lock().ok())
-                .and_then(|st| st.port)
-        }) {
+        if let Some(port) = engine::embed_port().or_else(|| engine::with_port(|p| Ok(p)).ok()) {
             let summaries: Vec<String> = chunks.iter()
                 .map(|c| summarize_chunk(port, c).unwrap_or_else(|| c.clone()))
                 .collect();
@@ -280,6 +276,8 @@ fn persist_chunks(
         let coll = state.zvec.collection_for(library_id)?;
         let refs: Vec<&Doc> = zvec_docs.iter().collect();
         coll.insert(&refs).map_err(|e| e.to_string())?;
+        coll.flush().map_err(|e| e.to_string())?;
+        coll.optimize().map_err(|e| e.to_string())?;
     }
 
     store
@@ -298,12 +296,6 @@ fn index_one_file(
     let (chunks, achieved) = chunk_and_summarize(&text, target);
     let embeddings = if target >= 4 { embed_chunks(&chunks) } else { vec![None; chunks.len()] };
     persist_chunks(store, library_id, file_id, &file_name, target, achieved, &chunks, &embeddings)
-}
-
-fn engine_port() -> Option<u16> {
-    let s = crate::APP_STATE.get()?;
-    let st = s.engine.status.lock().ok()?;
-    st.port
 }
 
 fn summarize_chunk(port: u16, chunk: &str) -> Option<String> {
