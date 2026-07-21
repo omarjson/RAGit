@@ -33,9 +33,11 @@ LLMs locally via **llama.cpp**. It lets you:
 - **Tauri v2** desktop shell (Rust)
 - **React + Vite + Tailwind** frontend
 - **llama.cpp** (`llama-server`) sidecar for chat / embeddings / vision
+  (auto-downloaded per-platform: Windows, Linux, macOS)
 - **Axum** HTTP server for Team Mode
-- **SQLite** (`rusqlite`, bundled) for users, sessions, libraries, files, vectors
-- In-Rust cosine similarity for retrieval (no external vector extension required)
+- **SQLite** (`rusqlite`, bundled) for users, sessions, libraries, files, and metadata
+- **Zvec** (`zvec-rust`) for vector storage and hybrid search (HNSW + FTS + scalar filters)
+- In-Rust cosine similarity fallback (no external vector extension required)
 
 ## Getting Started
 
